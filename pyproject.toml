@@ -28,6 +28,10 @@ amocrm-mcp-auth = "auth_setup:main"
 Homepage = "https://github.com/ilyaberdysh/amocrm-mcp"
 Issues = "https://github.com/ilyaberdysh/amocrm-mcp/issues"
 
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["server.py", "amocrm_client.py", "config.py", "auth_setup.py"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
