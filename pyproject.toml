@@ -1,0 +1,33 @@
+[project]
+name = "amocrm-mcp"
+version = "0.1.0"
+description = "MCP server for AmoCRM — gives Claude Desktop direct access to your CRM"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["amocrm", "mcp", "claude", "crm", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+amocrm-mcp = "server:main_sync"
+amocrm-mcp-auth = "auth_setup:main"
+
+[project.urls]
+Homepage = "https://github.com/ilyaberdysh/amocrm-mcp"
+Issues = "https://github.com/ilyaberdysh/amocrm-mcp/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
