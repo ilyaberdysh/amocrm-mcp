@@ -5,10 +5,12 @@ Identical to backend version + on_token_refresh callback for auto-saving tokens.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 
@@ -94,22 +96,27 @@ class AmoCRMClient:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self._on_token_refresh = on_token_refresh
+        self._token_lock = threading.Lock()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _get(self, path: str) -> dict | None:
         result = self._raw_get(path, self.access_token)
         if result is None:
-            new_tokens = refresh_tokens(
-                self.subdomain, self.client_id, self.client_secret,
-                self.redirect_uri, self.refresh_token,
-            )
-            if new_tokens:
-                self.access_token = new_tokens["access_token"]
-                self.refresh_token = new_tokens.get("refresh_token", self.refresh_token)
-                if self._on_token_refresh:
-                    self._on_token_refresh(self.access_token, self.refresh_token)
+            with self._token_lock:
+                # Double-check: another thread may have already refreshed
                 result = self._raw_get(path, self.access_token)
+                if result is None:
+                    new_tokens = refresh_tokens(
+                        self.subdomain, self.client_id, self.client_secret,
+                        self.redirect_uri, self.refresh_token,
+                    )
+                    if new_tokens:
+                        self.access_token = new_tokens["access_token"]
+                        self.refresh_token = new_tokens.get("refresh_token", self.refresh_token)
+                        if self._on_token_refresh:
+                            self._on_token_refresh(self.access_token, self.refresh_token)
+                    result = self._raw_get(path, self.access_token)
         return result
 
     def _raw_get(self, path: str, token: str) -> dict | None:
@@ -122,7 +129,7 @@ class AmoCRMClient:
         delays = [2, 5, 10]
         for attempt in range(len(delays) + 1):
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=15) as resp:
                     body = resp.read().decode()
                     if not body:
                         return None
@@ -138,20 +145,57 @@ class AmoCRMClient:
         return None
 
     def _paginate(self, path: str, entity_key: str, limit: int = 200) -> list[dict]:
-        results: list[dict] = []
         page_size = min(limit, 250)
-        page = 1
-        while len(results) < limit:
-            sep = "&" if "?" in path else "?"
-            data = self._get(f"{path}{sep}limit={page_size}&page={page}")
-            if not data or "_embedded" not in data:
+        sep = "&" if "?" in path else "?"
+
+        # Page 1: sequential to check data exists
+        data = self._get(f"{path}{sep}limit={page_size}&page=1")
+        if not data or "_embedded" not in data:
+            return []
+        items = data["_embedded"].get(entity_key, [])
+        results: list[dict] = list(items)
+        if len(items) < page_size or len(results) >= limit:
+            return results[:limit]
+
+        # Remaining pages: fetch concurrently
+        max_pages = (limit + page_size - 1) // page_size
+
+        def fetch_page(page: int) -> tuple[int, list[dict]]:
+            d = self._get(f"{path}{sep}limit={page_size}&page={page}")
+            if not d or "_embedded" not in d:
+                return (page, [])
+            return (page, d["_embedded"].get(entity_key, []))
+
+        page_results: dict[int, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(fetch_page, p): p for p in range(2, max_pages + 1)}
+            for future in as_completed(futures):
+                page_num, page_items = future.result()
+                page_results[page_num] = page_items
+                if len(page_items) < page_size:
+                    for f, p in futures.items():
+                        if p > page_num and not f.done():
+                            f.cancel()
+
+        for page_num in sorted(page_results.keys()):
+            page_items = page_results[page_num]
+            results.extend(page_items)
+            if len(page_items) < page_size or len(results) >= limit:
                 break
-            items: list[dict] = data["_embedded"].get(entity_key, [])
-            results.extend(items)
-            if len(items) < page_size:
-                break
-            page += 1
+
         return results[:limit]
+
+    def _get_company_names_batch(self, company_ids: list[int]) -> dict[int, str]:
+        """Fetch company names for multiple IDs in a single API call."""
+        if not company_ids:
+            return {}
+        params = "&".join(f"filter[id][]={cid}" for cid in company_ids)
+        data = self._get(f"/api/v4/companies?{params}&limit=250")
+        result: dict[int, str] = {}
+        if data and "_embedded" in data:
+            for company in data["_embedded"].get("companies", []):
+                result[company["id"]] = company.get("name", f"ID {company['id']}")
+        return result
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -338,9 +382,9 @@ class AmoCRMClient:
             params.append(f"filter[closed_at][from]={closed_at_from}")
         if closed_at_to:
             params.append(f"filter[closed_at][to]={closed_at_to}")
-        params.append("with=companies,contacts")
+        params.append("with=companies")
 
-        base = "/api/v4/leads?" + "&".join(params) if params else "/api/v4/leads?with=companies,contacts"
+        base = "/api/v4/leads?" + "&".join(params) if params else "/api/v4/leads?with=companies"
         leads = self._paginate(base, "leads", limit=10000)
 
         if exclude_closed:
@@ -353,8 +397,6 @@ class AmoCRMClient:
             cid = companies[0]["id"] if companies else 0
             price = lead.get("price", 0) or 0
             rid = lead.get("responsible_user_id", 0)
-            contacts = embedded.get("contacts") or []
-            contact_id = contacts[0]["id"] if contacts else 0
 
             if cid not in groups:
                 groups[cid] = {
@@ -362,27 +404,23 @@ class AmoCRMClient:
                     "total_price": 0,
                     "deals_count": 0,
                     "manager_ids": set(),
-                    "main_contact_id": contact_id,
                 }
             g = groups[cid]
             g["total_price"] += price
             g["deals_count"] += 1
             if rid:
                 g["manager_ids"].add(rid)
-            if not g["main_contact_id"] and contact_id:
-                g["main_contact_id"] = contact_id
 
         # Sort by total_price DESC, take top-N
         sorted_groups = sorted(groups.values(), key=lambda x: x["total_price"], reverse=True)[:top]
 
-        # Fetch company names for top-N
+        # Batch-fetch company names in 1 call instead of N
+        non_zero_ids = [g["company_id"] for g in sorted_groups if g["company_id"] != 0]
+        company_names = self._get_company_names_batch(non_zero_ids)
+
         for g in sorted_groups:
             cid = g["company_id"]
-            if cid == 0:
-                g["company_name"] = "Без компании"
-            else:
-                data = self._get(f"/api/v4/companies/{cid}")
-                g["company_name"] = (data or {}).get("name", f"ID {cid}")
+            g["company_name"] = "Без компании" if cid == 0 else company_names.get(cid, f"ID {cid}")
             g["avg_price"] = g["total_price"] // g["deals_count"] if g["deals_count"] else 0
             g["manager_ids"] = list(g["manager_ids"])
 
