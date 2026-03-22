@@ -308,6 +308,86 @@ class AmoCRMClient:
             "by_pipeline": list(by_pipeline.values()),
         }
 
+    def get_leads_grouped_by_company(
+        self,
+        pipeline_id: int | None = None,
+        status_ids: list[int] | None = None,
+        responsible_user_ids: list[int] | None = None,
+        exclude_closed: bool = False,
+        closed_at_from: int | None = None,
+        closed_at_to: int | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        top: int = 50,
+    ) -> list[dict]:
+        """Fetch ALL leads, group by company, return top-N by total_price."""
+        params: list[str] = []
+        if pipeline_id:
+            params.append(f"filter[pipeline_id]={pipeline_id}")
+        if status_ids:
+            for sid in status_ids:
+                params.append(f"filter[status_id][]={sid}")
+        if responsible_user_ids:
+            for uid in responsible_user_ids:
+                params.append(f"filter[responsible_user_id][]={uid}")
+        if date_from:
+            params.append(f"filter[created_at][from]={date_from}")
+        if date_to:
+            params.append(f"filter[created_at][to]={date_to}")
+        if closed_at_from:
+            params.append(f"filter[closed_at][from]={closed_at_from}")
+        if closed_at_to:
+            params.append(f"filter[closed_at][to]={closed_at_to}")
+        params.append("with=companies,contacts")
+
+        base = "/api/v4/leads?" + "&".join(params) if params else "/api/v4/leads?with=companies,contacts"
+        leads = self._paginate(base, "leads", limit=10000)
+
+        if exclude_closed:
+            leads = [l for l in leads if l.get("status_id") not in (142, 143)]
+
+        groups: dict[int, dict] = {}
+        for lead in leads:
+            embedded = lead.get("_embedded") or {}
+            companies = embedded.get("companies") or []
+            cid = companies[0]["id"] if companies else 0
+            price = lead.get("price", 0) or 0
+            rid = lead.get("responsible_user_id", 0)
+            contacts = embedded.get("contacts") or []
+            contact_id = contacts[0]["id"] if contacts else 0
+
+            if cid not in groups:
+                groups[cid] = {
+                    "company_id": cid,
+                    "total_price": 0,
+                    "deals_count": 0,
+                    "manager_ids": set(),
+                    "main_contact_id": contact_id,
+                }
+            g = groups[cid]
+            g["total_price"] += price
+            g["deals_count"] += 1
+            if rid:
+                g["manager_ids"].add(rid)
+            if not g["main_contact_id"] and contact_id:
+                g["main_contact_id"] = contact_id
+
+        # Sort by total_price DESC, take top-N
+        sorted_groups = sorted(groups.values(), key=lambda x: x["total_price"], reverse=True)[:top]
+
+        # Fetch company names for top-N
+        for g in sorted_groups:
+            cid = g["company_id"]
+            if cid == 0:
+                g["company_name"] = "Без компании"
+            else:
+                data = self._get(f"/api/v4/companies/{cid}")
+                g["company_name"] = (data or {}).get("name", f"ID {cid}")
+            g["avg_price"] = g["total_price"] // g["deals_count"] if g["deals_count"] else 0
+            g["manager_ids"] = list(g["manager_ids"])
+
+        return sorted_groups
+
     def get_contacts(
         self,
         query: str = "",

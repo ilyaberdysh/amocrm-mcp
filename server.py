@@ -119,6 +119,30 @@ TOOLS: list[types.Tool] = [
         },
     ),
     types.Tool(
+        name="get_leads_grouped_by_company",
+        description=(
+            "Группирует ВСЕ сделки по компаниям и суммирует. Возвращает топ-N компаний "
+            "по общей сумме (LTV). Пагинирует все сделки на сервере — нет лимита в 200. "
+            "Используй для LTV-анализа, рейтинга клиентов, поиска топ-компаний для интервью. "
+            "Подтягивает названия компаний автоматически."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "pipeline_id": {"type": "integer", "description": "ID воронки"},
+                "status_ids": {"type": "array", "items": {"type": "integer"}, "description": "ID статусов (напр. [142] для выигранных)"},
+                "responsible_user_ids": {"type": "array", "items": {"type": "integer"}, "description": "ID менеджеров"},
+                "exclude_closed": {"type": "boolean", "description": "true = исключить закрытые (142+143), оставить только активные"},
+                "closed_at_from": {"type": "integer", "description": "Дата закрытия от (unix timestamp)"},
+                "closed_at_to": {"type": "integer", "description": "Дата закрытия до (unix timestamp)"},
+                "date_from": {"type": "integer", "description": "Дата создания от (unix timestamp)"},
+                "date_to": {"type": "integer", "description": "Дата создания до (unix timestamp)"},
+                "limit": {"type": "integer", "description": "Топ N компаний (по умолчанию 50)"},
+            },
+            "required": [],
+        },
+    ),
+    types.Tool(
         name="get_contacts",
         description="Поиск и получение контактов с фильтрами.",
         inputSchema={
@@ -366,6 +390,19 @@ def _execute(name: str, args: dict, client: AmoCRMClient) -> object:
             price_to=args.get("price_to"),
             query=args.get("query"),
             exclude_closed=args.get("exclude_closed", False),
+        )
+
+    if name == "get_leads_grouped_by_company":
+        return client.get_leads_grouped_by_company(
+            pipeline_id=args.get("pipeline_id"),
+            status_ids=args.get("status_ids"),
+            responsible_user_ids=args.get("responsible_user_ids"),
+            exclude_closed=args.get("exclude_closed", False),
+            closed_at_from=args.get("closed_at_from"),
+            closed_at_to=args.get("closed_at_to"),
+            date_from=args.get("date_from"),
+            date_to=args.get("date_to"),
+            top=args.get("limit", 50),
         )
 
     if name == "get_contacts":
