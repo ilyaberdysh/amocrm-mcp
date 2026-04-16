@@ -144,9 +144,16 @@ class AmoCRMClient:
                 raise RuntimeError(f"AmoCRM API error {e.code} on {path}: {body[:300]}") from e
         return None
 
-    def _paginate(self, path: str, entity_key: str, limit: int = 200) -> list[dict]:
+    def _paginate(self, path: str, entity_key: str, limit: int = 200, page: int | None = None) -> list[dict]:
         page_size = min(limit, 250)
         sep = "&" if "?" in path else "?"
+
+        # If a specific page > 1 is requested, skip directly to it
+        if page and page > 1:
+            data = self._get(f"{path}{sep}limit={page_size}&page={page}")
+            if not data or "_embedded" not in data:
+                return []
+            return list(data["_embedded"].get(entity_key, []))[:limit]
 
         # Page 1: sequential to check data exists
         data = self._get(f"{path}{sep}limit={page_size}&page=1")
@@ -231,6 +238,7 @@ class AmoCRMClient:
         with_tasks: bool = False,
         with_catalog_elements: bool = False,
         limit: int = 200,
+        page: int | None = None,
     ) -> list[dict]:
         params: list[str] = []
         if pipeline_id:
@@ -278,7 +286,7 @@ class AmoCRMClient:
         if with_parts:
             params.append("with=" + ",".join(with_parts))
         base = "/api/v4/leads?" + "&".join(params) if params else "/api/v4/leads"
-        return self._paginate(base, "leads", limit=min(limit, 200))
+        return self._paginate(base, "leads", limit=min(limit, 200), page=page)
 
     def count_and_sum_leads(
         self,
