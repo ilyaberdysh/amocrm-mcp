@@ -83,6 +83,7 @@ TOOLS: list[types.Tool] = [
                 "with_tasks": {"type": "boolean", "description": "Включить задачи по сделке"},
                 "with_catalog_elements": {"type": "boolean", "description": "Включить товары из каталога"},
                 "limit": {"type": "integer", "description": "Максимум сделок (по умолчанию 200, это максимум API)"},
+                "page": {"type": "integer", "description": "Номер страницы для пагинации. По умолчанию 1. Если pipeline содержит более 200 сделок, используй page=2 для выборки записей 201+."},
             },
             "required": [],
         },
@@ -372,6 +373,7 @@ def _execute(name: str, args: dict, client: AmoCRMClient) -> object:
             with_tasks=args.get("with_tasks", False),
             with_catalog_elements=args.get("with_catalog_elements", False),
             limit=args.get("limit", 200),
+            page=args.get("page"),
         )
 
     if name == "count_and_sum_leads":
